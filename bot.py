@@ -18,30 +18,58 @@ logging.getLogger('urllib3').setLevel(logging.CRITICAL)
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.WARN)
 
-class messager_recoder:
+class message_handler:
     def __init__(self, host = 'localhost', port = 6379, db = 0):
-        self._db = redis.StrictRedis(host='localhost', port=6379, db=0)
-                        
-    def key(self, message):
-        k = message.chat.type + ':' + str(message.chat_id) + ':' + str(message.from_user.id);
-        return k
+        self._db = redis.StrictRedis(host=host, port=port, db=db)
+        with open('message_handler.lua') as f1, open('rank.lua') as f2:
+            script1 = f1.read()
+            self._lua_sha_1 = self._db.script_load(script1)
+            script2 = f2.read()
+            self._lua_sha_2 = self._db.script_load(script2)
 
-    def save(self, message):
-        print(self.key(message))
-        self._db.rpush(self.key(message), message.text)
+    def _key(self, message):
+        return message.chat.type + ':' + str(message.chat_id)
+
+    def _msgkey(self, message):
+        return 'message:' + self._key(message) + ':' + str(message.from_user.id)
+
+    def handle_message(self, message):
+        user = str(message.from_user.id)
+        name = message.from_user.first_name + ' ' + message.from_user.last_name
+        print(self._msgkey(message))
+        self._db.evalsha(self._lua_sha_1, 4, self._key(message), user, message, name)
 
     def static(self, message):
-        ret = self._db.llen(self.key(message))
+        ret = self._db.llen(self._msgkey(message))
         if ret is not None:
             return str(ret)
         return '0'
 
-    def history(self, message, count = 1):
-        ret = self._db.lrange(self.key(message), -count, -1)
+    def rank(self, message):
+        try:
+            ret = self._db.evalsha(self._lua_sha_2, 1, self._key(message))
+        except:
+            return 'error'
+
         result = ''
         if ret is not None:
             for i in range(len(ret)):
-                result = result + '<{0}>\n'.format(i) + ret[0].decode('utf-8') + '\n<{0}>\n'.format(i) 
+                if i%2 == 0: 
+                    if ret[i] is not None:
+                        result = result + ret[i].decode('utf-8') + ' : '
+                    else:
+                        result = result + 'xxx : '
+                else:
+                    result = result + ret[i].decode('utf-8') + '\n'
+            return result
+        return 'empty'
+
+    def history(self, message, count = 1):
+        ret = self._db.lrange(self._msgkey(message), -count, -1)
+        result = ''
+        if ret is not None:
+            for i in range(len(ret)):
+                result = result + '{0})\n'.format(i+1) + ret[i].decode('utf-8') + '\n' 
         result = result + 'total {0} messages.\n'.format(len(ret))
         return result
             
@@ -61,7 +89,7 @@ class emoji_converter:
 
 converter = emoji_converter()
 at_me = ''
-recorder = messager_recoder()
+handler = message_handler()
 
 def check_auth(update):
     print(update.message)
@@ -84,29 +112,24 @@ def info(bot, update):
 
 @auth
 def static(bot, update):
-    reply = recorder.static(update.message)
+    reply = handler.static(update.message)
     update.message.reply_text(reply)
 
 @auth
 def history(bot, update):
-    arg = re.sub('\s*/history\s*', '', update.message.text).strip()
-    print(arg)
-    try:
-        count = int(arg)
-    except:
-        return update.message.reply_text('bad arg,expect a number')
-    if count < 1 or count > 100:
-        return update.message.reply_text('bad arg,range error')
+    reply = handler.history(update.message)
+    update.message.reply_text(reply)
 
-    reply = recorder.history(update.message, count)
+@auth
+def rank(bot, update):
+    reply = handler.rank(update.message)
     update.message.reply_text(reply)
 
 def chat(bot, update):
-    recorder.save(update.message)
+    handler.handle_message(update.message)
     if not check_auth(update):
         return
     msg = update.message.text
-    print(msg)
     if msg == 'info':
         update.message.reply_text('https://github.com/zwkno1/telegram_bot')
         return
@@ -142,6 +165,7 @@ def main():
     updater.dispatcher.add_handler(CommandHandler('info', info))
     updater.dispatcher.add_handler(CommandHandler('static', static))
     updater.dispatcher.add_handler(CommandHandler('history', history))
+    updater.dispatcher.add_handler(CommandHandler('rank', rank))
 
     updater.dispatcher.add_handler(MessageHandler(Filters.text, chat))
 
