@@ -11,12 +11,31 @@ import configparser
 import redis
 import re
 import os
+import jieba
+import jieba.analyse
+import jieba.posseg
+
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-urllib3.disable_warnings();
+urllib3.disable_warnings()
 logging.getLogger('urllib3').setLevel(logging.CRITICAL)
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.WARN)
+
+#jieba.enable_parallel(4)
+jieba.add_word('24口交换机')
+
+def jieba_textrank(text):
+    allow = ('n', 'nr', 'ns', 'nt', 'nz', 'vn', 'v', 'N')
+    return jieba.analyse.textrank(text, topK=20, withWeight=False, allowPOS=allow)
+
+def jieba_textrank2(text):
+    result = set()
+    allow = {'n', 'nr', 'ns', 'nt', 'nz', 'eng'}
+    for w in jieba.posseg.cut(text):
+        if w.flag in allow:
+            result.add(w.word)
+    return result
 
 class message_handler:
     def __init__(self, host = 'localhost', port = 6379, db = 0):
@@ -37,7 +56,9 @@ class message_handler:
         user = str(message.from_user.id)
         name = message.from_user.first_name + ' ' + message.from_user.last_name
         print(self._msgkey(message))
-        self._db.evalsha(self._lua_sha_1, 4, self._key(message), user, message, name)
+        words = jieba_textrank2(message.text)
+        print(words)
+        self._db.evalsha(self._lua_sha_1, 4, self._key(message), user, message, name, *words)
 
     def static(self, message):
         ret = self._db.llen(self._msgkey(message))
@@ -63,6 +84,20 @@ class message_handler:
                     result = result + ret[i].decode('utf-8') + '\n'
             return result
         return 'empty'
+
+    def textrank(self, message):
+        try:
+            key = 'textrank:' + self._key(message)
+            ret = self._db.zrevrange(key, 0, 9, withscores=True)
+        
+            result = ''
+            if ret is not None:
+                for i in range(len(ret)):
+                    result = result + ret[i][0].decode('utf-8') + ' : ' + str(int(ret[i][1])) + '\n'
+                return result
+            return 'empty'
+        except:
+            return 'error'
 
     def history(self, message, count = 1):
         ret = self._db.lrange(self._msgkey(message), -count, -1)
@@ -125,6 +160,35 @@ def rank(bot, update):
     reply = handler.rank(update.message)
     update.message.reply_text(reply)
 
+@auth
+def textrank(bot, update):
+    reply = handler.textrank(update.message)
+    update.message.reply_text(reply)
+
+def get_chat_reply(msg):
+    try:
+        r = requests.get('http://api.qingyunke.com/api.php?key=free&appid=0&msg=\"' + msg +'\"')
+        chat_reply = json.loads(r.content.decode('utf-8'))['content']
+        #chat_reply = r.get('content')
+        chat_reply = converter.convert(chat_reply)
+        return chat_reply
+    except:
+        return 
+
+def get_chat_reply_2(msg):
+    KEY = '8edce3ce905a4c1dbb965e6b35c3834d'
+    apiUrl = 'http://www.tuling123.com/openapi/api'
+    data = {
+            'key'    : KEY,
+            'info'   : msg,
+            'userid' : 'wechat-robot',
+            }
+    try:
+        r = requests.post(apiUrl, data=data).json()
+        return r.get('text')
+    except:
+        return
+
 def chat(bot, update):
     handler.handle_message(update.message)
     if not check_auth(update):
@@ -134,10 +198,8 @@ def chat(bot, update):
         update.message.reply_text('https://github.com/zwkno1/telegram_bot')
         return
     else:
-        r = requests.get('http://api.qingyunke.com/api.php?key=free&appid=0&msg=\"' + msg +'\"')
-        chat_reply = json.loads(r.content.decode('utf-8'))['content']
-        chat_reply = converter.convert(chat_reply)
-        update.message.reply_text(chat_reply)
+        chat_reply = get_chat_reply_2(update.message.text)
+        update.message.reply_text(chat_reply or '^-^')
         return 
 
 def main():
@@ -166,11 +228,12 @@ def main():
     updater.dispatcher.add_handler(CommandHandler('static', static))
     updater.dispatcher.add_handler(CommandHandler('history', history))
     updater.dispatcher.add_handler(CommandHandler('rank', rank))
+    updater.dispatcher.add_handler(CommandHandler('textrank', textrank))
 
     updater.dispatcher.add_handler(MessageHandler(Filters.text, chat))
 
     updater.start_polling()
-    updater.idle()
+    #updater.idle()
 
 if __name__ == '__main__':
     main()

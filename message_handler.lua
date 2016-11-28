@@ -19,5 +19,11 @@ end
 redis.call('rpush', message_key, KEYS[3])
 redis.call('hset', 'user_name', KEYS[2], KEYS[4])
 
+local text_rank_key = "textrank:" .. KEYS[1]
+
+for i=1, #ARGV, 1 do
+	redis.call('zincrby', text_rank_key, 1, ARGV[i])
+end
+
 return 'ok'
 
