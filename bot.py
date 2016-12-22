@@ -14,6 +14,16 @@ import os
 import jieba
 import jieba.analyse
 import jieba.posseg
+import pytrie
+
+forbid_words_filter = pytrie.trie()
+with open('forbid.txt') as f:
+    for line in f:
+        line  = line.strip('\n')
+        if line != '':
+            forbid_words_filter.insert(line)
+
+forbid_words_filter.build_fail()
 
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -23,7 +33,6 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.WARN)
 
 #jieba.enable_parallel(4)
-jieba.add_word('24口交换机')
 
 def jieba_textrank(text):
     allow = ('n', 'nr', 'ns', 'nt', 'nz', 'vn', 'v', 'N')
@@ -31,14 +40,17 @@ def jieba_textrank(text):
 
 def jieba_textrank2(text):
     result = set()
-    allow = {'n', 'nr', 'ns', 'nt', 'nz', 'eng'}
-    for w in jieba.posseg.cut(text):
-        if w.flag in allow:
+    allow = {'n', 'nr', 'ns', 'nt', 'nz', 'eng', 'user'}
+    words = [i for i in jieba.posseg.cut(text)]
+    print(words)
+    for w in words:
+        if w.flag in allow: #or (w.flag == 'x' and len(w.word) != 1):
             result.add(w.word)
     return result
 
 class message_handler:
     def __init__(self, host = 'localhost', port = 6379, db = 0):
+        self._forbidwords = set()
         self._db = redis.StrictRedis(host=host, port=port, db=db)
         with open('message_handler.lua') as f1, open('rank.lua') as f2:
             script1 = f1.read()
@@ -57,6 +69,7 @@ class message_handler:
         name = message.from_user.first_name + ' ' + message.from_user.last_name
         print(self._msgkey(message))
         words = jieba_textrank2(message.text)
+        words = words - self._forbidwords
         print(words)
         self._db.evalsha(self._lua_sha_1, 4, self._key(message), user, message, name, *words)
 
@@ -89,6 +102,7 @@ class message_handler:
         try:
             key = 'textrank:' + self._key(message)
             ret = self._db.zrevrange(key, 0, 9, withscores=True)
+            print(ret)
         
             result = ''
             if ret is not None:
@@ -98,6 +112,57 @@ class message_handler:
             return 'empty'
         except:
             return 'error'
+        
+    def textstudy(self, text):
+        try:
+            key = 'textstudy'
+            words = text.split()
+            ret = self._db.sadd(key, *words)
+            if ret is not None:
+                for i in words:
+                    print('jieba study ', i)
+                    jieba.add_word(i, tag='user')
+                return 'ok'
+        except:
+            pass
+        return 'error'
+
+    def start_study(self):
+            key = 'textstudy'
+            ret = self._db.smembers(key)
+            print('text study')
+            print(ret)
+            if ret is not None:
+                for i  in ret:
+                    j = i.decode('utf-8')
+                    print('jieba study ', j)
+                    jieba.add_word(j, tag='user')
+
+    def textforbid(self, text):
+        try:
+            key = 'textforbid'
+            words = text.split()
+            if len(words) != 0:
+                ret = self._db.sadd(key, *words)
+                if ret is not None:
+                    for i in words:
+                        print('add forbid word ', i)
+                        self._forbidwords.add(i)
+                    return 'ok'
+        except:
+            pass
+        return 'error'
+
+    def load_forbid(self):
+            key = 'textforbid'
+            ret = self._db.smembers(key)
+            print('text forbid')
+            print(ret)
+            if ret is not None:
+                for i  in ret:
+                    j = i.decode('utf-8')
+                    print('text forbid ', j)
+                    self._forbidwords.add(j)
 
     def history(self, message, count = 1):
         ret = self._db.lrange(self._msgkey(message), -count, -1)
@@ -125,6 +190,8 @@ class emoji_converter:
 converter = emoji_converter()
 at_me = ''
 handler = message_handler()
+handler.start_study()
+handler.load_forbid()
 
 def check_auth(update):
     print(update.message)
@@ -165,6 +232,18 @@ def textrank(bot, update):
     reply = handler.textrank(update.message)
     update.message.reply_text(reply)
 
+@auth
+def textstudy(bot, update):
+    text = update.message.text.replace('/textstudy', '')
+    reply = handler.textstudy(text)
+    update.message.reply_text(reply)
+
+@auth
+def textforbid(bot, update):
+    text = update.message.text.replace('/textforbid', '')
+    reply = handler.textforbid(text)
+    update.message.reply_text(reply)
+
 def get_chat_reply(msg):
     try:
         r = requests.get('http://api.qingyunke.com/api.php?key=free&appid=0&msg=\"' + msg +'\"')
@@ -190,6 +269,17 @@ def get_chat_reply_2(msg):
         return
 
 def chat(bot, update):
+    update.message.text = update.message.text.replace(at_me, '')
+
+    text = update.message.text
+    text2 = forbid_words_filter.process(update.message.text)
+    if text != text2:
+        print('>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>')
+        print(text)
+        print('-----------------------------------------')
+        print(text2)
+        print('<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<')
+    
     handler.handle_message(update.message)
     if not check_auth(update):
         return
@@ -229,6 +319,8 @@ def main():
     updater.dispatcher.add_handler(CommandHandler('history', history))
     updater.dispatcher.add_handler(CommandHandler('rank', rank))
     updater.dispatcher.add_handler(CommandHandler('textrank', textrank))
+    updater.dispatcher.add_handler(CommandHandler('textstudy', textstudy))
+    updater.dispatcher.add_handler(CommandHandler('textforbid', textforbid))
 
     updater.dispatcher.add_handler(MessageHandler(Filters.text, chat))
 
