@@ -1,6 +1,8 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
+import time
+import threading
 import logging
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters
 from telegram import Bot
@@ -11,20 +13,20 @@ import configparser
 import redis
 import re
 import os
+import sys
 import jieba
 import jieba.analyse
 import jieba.posseg
 import pytrie
 
 forbid_words_filter = pytrie.trie()
-#with open('forbid.txt') as f:
-#    for line in f:
-#        line  = line.strip('\n')
-#        if line != '':
-#            forbid_words_filter.insert(line)
+with open('forbid.txt') as f:
+    for line in f:
+        line  = line.strip('\n')
+        if line != '':
+            forbid_words_filter.insert(line)
 
 forbid_words_filter.build_fail()
-
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 urllib3.disable_warnings()
@@ -35,14 +37,10 @@ logger.setLevel(logging.WARN)
 #jieba.enable_parallel(4)
 
 def jieba_textrank(text):
-    allow = ('n', 'nr', 'ns', 'nt', 'nz', 'vn', 'v', 'N')
-    return jieba.analyse.textrank(text, topK=20, withWeight=False, allowPOS=allow)
-
-def jieba_textrank2(text):
     result = set()
     allow = {'n', 'nr', 'ns', 'nt', 'nz', 'eng', 'user'}
     words = [i for i in jieba.posseg.cut(text)]
-    print(words)
+    #print(words)
     for w in words:
         if w.flag in allow: #or (w.flag == 'x' and len(w.word) != 1):
             result.add(w.word)
@@ -54,9 +52,9 @@ class message_handler:
         self._db = redis.StrictRedis(host=host, port=port, db=db)
         with open('message_handler.lua') as f1, open('rank.lua') as f2:
             script1 = f1.read()
-            self._lua_sha_1 = self._db.script_load(script1)
+            self._lua_script_message = self._db.script_load(script1)
             script2 = f2.read()
-            self._lua_sha_2 = self._db.script_load(script2)
+            self._lua_script_rank = self._db.script_load(script2)
 
     def _key(self, message):
         return message.chat.type + ':' + str(message.chat_id)
@@ -64,14 +62,15 @@ class message_handler:
     def _msgkey(self, message):
         return 'message:' + self._key(message) + ':' + str(message.from_user.id)
 
-    def handle_message(self, message):
+    def handle_message(self, message, is_forbid):
+        self.chat_id = message.chat_id
         user = str(message.from_user.id)
         name = message.from_user.first_name + ' ' + message.from_user.last_name
-        print(self._msgkey(message))
-        words = jieba_textrank2(message.text)
+        #print(self._msgkey(message))
+        words = jieba_textrank(message.text)
         words = words - self._forbidwords
-        print(words)
-        self._db.evalsha(self._lua_sha_1, 4, self._key(message), user, message, name, *words)
+        #print(words)
+        self._db.evalsha(self._lua_script_message, 5, self._key(message), user, message, name, is_forbid, *words)
 
     def static(self, message):
         ret = self._db.llen(self._msgkey(message))
@@ -81,7 +80,7 @@ class message_handler:
 
     def rank(self, message):
         try:
-            ret = self._db.evalsha(self._lua_sha_2, 1, self._key(message))
+            ret = self._db.evalsha(self._lua_script_rank, 1, self._key(message))
         except:
             return 'error'
 
@@ -102,7 +101,6 @@ class message_handler:
         try:
             key = 'textrank:' + self._key(message)
             ret = self._db.zrevrange(key, 0, 9, withscores=True)
-            print(ret)
         
             result = ''
             if ret is not None:
@@ -173,28 +171,39 @@ class message_handler:
         result = result + 'total {0} messages.\n'.format(len(ret))
         return result
             
-class emoji_converter:
-    def __init__(self):
-        self._convert_dict = {}
-        self._convert_dict['{br}'] = '\n'
-        #Emoji Convert  
-        #http://apps.timwhitlock.info/emoji/tables/unicode#block-4-enclosed-characters
-        for i in range(63):
-            self._convert_dict['{0}face:{1}{2}'.format('{', i, '}')] = (b'\xF0\x9F\x98' + bytes([0x81+i])).decode()
+#class emoji_converter:
+#    def __init__(self):
+#        self._convert_dict = {}
+#        self._convert_dict['{br}'] = '\n'
+#        #Emoji Convert  
+#        #http://apps.timwhitlock.info/emoji/tables/unicode#block-4-enclosed-characters
+#        for i in range(63):
+#            self._convert_dict['{0}face:{1}{2}'.format('{', i, '}')] = (b'\xF0\x9F\x98' + bytes([0x81+i])).decode()
+#
+#    def convert(self, text):
+#        for k,v in self._convert_dict.items():
+#            text = text.replace(k,v)
+#        return text
+#
+#converter = emoji_converter()
+#
+#def get_chat_reply(msg):
+#    try:
+#        r = requests.get('http://api.qingyunke.com/api.php?key=free&appid=0&msg=\"' + msg +'\"')
+#        chat_reply = json.loads(r.content.decode('utf-8'))['content']
+#        #chat_reply = r.get('content')
+#        chat_reply = converter.convert(chat_reply)
+#        return chat_reply
+#    except:
+#        return 
 
-    def convert(self, text):
-        for k,v in self._convert_dict.items():
-            text = text.replace(k,v)
-        return text
-
-converter = emoji_converter()
 at_me = ''
 handler = message_handler()
 handler.start_study()
 handler.load_forbid()
 
 def check_auth(update):
-    print(update.message)
+    #print(update.message)
     if update.message.chat.type != 'private' and update.message.text.find(at_me) == -1:
         return False
     msg = update.message.text.replace(at_me, '')
@@ -245,16 +254,6 @@ def textforbid(bot, update):
     update.message.reply_text(reply)
 
 def get_chat_reply(msg):
-    try:
-        r = requests.get('http://api.qingyunke.com/api.php?key=free&appid=0&msg=\"' + msg +'\"')
-        chat_reply = json.loads(r.content.decode('utf-8'))['content']
-        #chat_reply = r.get('content')
-        chat_reply = converter.convert(chat_reply)
-        return chat_reply
-    except:
-        return 
-
-def get_chat_reply_2(msg):
     KEY = '8edce3ce905a4c1dbb965e6b35c3834d'
     apiUrl = 'http://www.tuling123.com/openapi/api'
     data = {
@@ -269,24 +268,31 @@ def get_chat_reply_2(msg):
         return
 
 def chat(bot, update):
+    msg = update.message
+    title = msg.chat.type + ":"
+    if msg.chat.type != 'private':
+        title += str(msg.chat_id) + ":" + msg.chat.title + ":" 
+
+    title += str(msg.from_user.id) + ": " + msg.from_user.first_name + " " + msg.from_user.last_name
+    title +="  >>>>"
+
+    print(title)
+    print(msg.text)
+
     update.message.text = update.message.text.replace(at_me, '')
 
+    is_forbid_message = 'no'
     text = update.message.text
     text2 = forbid_words_filter.process(update.message.text)
     if text != text2:
-        print('>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>')
-        print(text)
-        print('-----------------------------------------')
-        print(text2)
-        print('<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<')
+        is_forbid_message = 'yes'
     
-    handler.handle_message(update.message)
+    handler.handle_message(update.message, is_forbid_message)
     if not check_auth(update):
         return
     msg = update.message.text
-    chat_reply = get_chat_reply_2(update.message.text)
+    chat_reply = get_chat_reply(update.message.text)
     update.message.reply_text(chat_reply or '^-^')
-    return 
 
 def main():
     token = None
@@ -317,8 +323,15 @@ def main():
 
     updater.dispatcher.add_handler(MessageHandler(Filters.text, chat))
 
-    updater.start_polling()
-    #updater.idle()
+    worker = threading.Thread(target=Updater.start_polling, args=(updater,))
+    worker.start()
+
+    for line in sys.stdin:
+        if handler.chat_id is not None:
+            bot.sendMessage(handler.chat_id, line)
+
+    worker.join()
+    updater.idle()
 
 if __name__ == '__main__':
     main()

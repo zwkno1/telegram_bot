@@ -4,10 +4,12 @@
 -- keys[2]: id
 -- keys[3]: message
 -- KEYS[4]: name
+-- KEYS[5]: is_forbid
 ]]--
 
 local rank_key = "rank:" .. KEYS[1] 
 local message_key = "message:" .. KEYS[1] .. ":" .. KEYS[2]
+local forbid_key = "forbid_message:" .. KEYS[1] .. ":" .. KEYS[2]
 
 local last_key = 'last_message:'..KEYS[1]
 local last = redis.call('get', last_key)
@@ -23,6 +25,10 @@ local text_rank_key = "textrank:" .. KEYS[1]
 
 for i=1, #ARGV, 1 do
 	redis.call('zincrby', text_rank_key, 1, ARGV[i])
+end
+
+if KEYS[5] == 'yes' then
+	redis.call('rpush', forbid_key, KEYS[3])
 end
 
 return 'ok'
