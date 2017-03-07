@@ -17,11 +17,11 @@ import jieba.posseg
 import pytrie
 
 forbid_words_filter = pytrie.trie()
-with open('forbid.txt') as f:
-    for line in f:
-        line  = line.strip('\n')
-        if line != '':
-            forbid_words_filter.insert(line)
+#with open('forbid.txt') as f:
+#    for line in f:
+#        line  = line.strip('\n')
+#        if line != '':
+#            forbid_words_filter.insert(line)
 
 forbid_words_filter.build_fail()
 
@@ -284,13 +284,9 @@ def chat(bot, update):
     if not check_auth(update):
         return
     msg = update.message.text
-    if msg == 'info':
-        update.message.reply_text('https://github.com/zwkno1/telegram_bot')
-        return
-    else:
-        chat_reply = get_chat_reply_2(update.message.text)
-        update.message.reply_text(chat_reply or '^-^')
-        return 
+    chat_reply = get_chat_reply_2(update.message.text)
+    update.message.reply_text(chat_reply or '^-^')
+    return 
 
 def main():
     token = None
