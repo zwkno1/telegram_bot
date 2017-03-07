@@ -293,22 +293,19 @@ def chat(bot, update):
         return 
 
 def main():
-    token, proxy= None, None
+    token = None
     try:
         config = configparser.ConfigParser()
         config.read('config.ini')
         token = config.get('Auth', 'Token')
-        proxy = config.get('Proxy', 'Proxy')
     except:
         pass
 
     if token is None:
         logger.fatal('token is not config')
         exit()
-    if proxy is None:
-        logger.warn('proxy is not config')
     
-    bot = Bot(token=token, proxy=proxy)
+    bot = Bot(token=token)
     global at_me
     at_me = '@' + bot.getMe().username 
 
